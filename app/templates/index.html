@@ -1,0 +1,486 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- Search Form -->
+<section class="search-section">
+    <h2>Search Flights</h2>
+    <form id="search-form">
+        <!-- Airports -->
+        <div class="form-row">
+            <div class="airport-input">
+                <label for="origin">Origin Airport</label>
+                <input type="text" id="origin" autocomplete="off"
+                       placeholder="Type city or airport code..." required>
+                <input type="hidden" id="origin-code" name="origin">
+                <div class="autocomplete-list" id="origin-list"></div>
+            </div>
+            <div class="airport-input">
+                <label for="destination">Destination Airport</label>
+                <input type="text" id="destination" autocomplete="off"
+                       placeholder="Type city or airport code..." required>
+                <input type="hidden" id="destination-code" name="destination">
+                <div class="autocomplete-list" id="destination-list"></div>
+            </div>
+        </div>
+
+        <!-- Date Range -->
+        <div class="form-row">
+            <div>
+                <label for="start_date">Earliest Departure Date</label>
+                <input type="date" id="start_date" name="start_date" required>
+            </div>
+            <div>
+                <label for="end_date">Latest Return Date</label>
+                <input type="date" id="end_date" name="end_date" required>
+            </div>
+        </div>
+
+        <!-- Trip Duration & Stops -->
+        <div class="form-row">
+            <div>
+                <label for="min_days">Min Trip Duration (days)</label>
+                <select id="min_days" name="min_days">
+                    {% for d in range(1, 31) %}
+                    <option value="{{ d }}">{{ d }} day{{ 's' if d > 1 }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="max_days">Max Trip Duration (days)</label>
+                <select id="max_days" name="max_days">
+                    {% for d in range(1, 31) %}
+                    <option value="{{ d }}">{{ d }} day{{ 's' if d > 1 }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
+        <!-- Airlines -->
+        <div class="airline-section">
+            <label>Airlines <small>(select which to include, leave empty for all)</small></label>
+            <div class="airline-grid">
+                {% for code, name in airlines %}
+                <label class="airline-checkbox">
+                    <input type="checkbox" name="airlines" value="{{ code }}">
+                    {{ name }}
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <button type="submit" class="search-btn" id="search-btn">Search Flights</button>
+    </form>
+</section>
+
+<!-- Progress Panel (hidden by default) -->
+<section class="progress-section" id="progress-section" style="display:none;">
+    <h2>Search Progress</h2>
+    <div class="progress-log" id="progress-log"></div>
+</section>
+
+<!-- Results Panel (hidden by default) -->
+<section class="results-section" id="results-section" style="display:none;">
+    <h2>Results <small id="results-count"></small></h2>
+    <div class="options-row">
+        <label class="option-checkbox">
+            <input type="checkbox" id="nonstop_only" name="nonstop_only">
+            Nonstop only
+        </label>
+        <label class="option-checkbox">
+            <input type="checkbox" id="no_overnight" name="no_overnight">
+            Avoid overnight flights
+        </label>
+    </div>
+    <div id="results-cards"></div>
+    <div class="pagination" id="pagination"></div>
+    <p id="no-results" style="display:none;">No matching round trips found.</p>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ---- Airport Autocomplete ----
+function setupAutocomplete(inputId, listId, onSelect) {
+    const input = document.getElementById(inputId);
+    const list = document.getElementById(listId);
+    let debounce;
+
+    input.addEventListener('input', () => {
+        clearTimeout(debounce);
+        const q = input.value.trim();
+        if (q.length < 1) { list.innerHTML = ''; list.style.display = 'none'; return; }
+
+        debounce = setTimeout(async () => {
+            const resp = await fetch(`/api/airports?q=${encodeURIComponent(q)}`);
+            const airports = await resp.json();
+            list.innerHTML = '';
+            if (airports.length === 0) { list.style.display = 'none'; return; }
+            airports.forEach(a => {
+                const div = document.createElement('div');
+                div.className = 'autocomplete-item';
+                div.textContent = `${a.code} - ${a.city} (${a.name})`;
+                div.addEventListener('click', () => {
+                    onSelect(a);
+                    list.innerHTML = '';
+                    list.style.display = 'none';
+                });
+                list.appendChild(div);
+            });
+            list.style.display = 'block';
+        }, 200);
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!input.contains(e.target) && !list.contains(e.target)) {
+            list.style.display = 'none';
+        }
+    });
+}
+
+// Origin: single select
+setupAutocomplete('origin', 'origin-list', (a) => {
+    document.getElementById('origin').value = `${a.code} - ${a.city}`;
+    document.getElementById('origin-code').value = a.code;
+});
+
+// Destination: single select
+setupAutocomplete('destination', 'destination-list', (a) => {
+    document.getElementById('destination').value = `${a.code} - ${a.city}`;
+    document.getElementById('destination-code').value = a.code;
+});
+
+// ---- Search with SSE ----
+document.getElementById('search-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+
+    const origin = document.getElementById('origin-code').value;
+    const destination = document.getElementById('destination-code').value;
+    if (!origin) { alert('Please select an origin airport'); return; }
+    if (!destination) { alert('Please select a destination airport'); return; }
+
+    const params = new URLSearchParams({
+        origin,
+        destinations: destination,
+        start_date: document.getElementById('start_date').value,
+        end_date: document.getElementById('end_date').value,
+        min_days: document.getElementById('min_days').value,
+        max_days: document.getElementById('max_days').value,
+    });
+
+    // Collect selected airlines
+    const checked = document.querySelectorAll('input[name="airlines"]:checked');
+    const airlineCodes = [...checked].map(c => c.value).join(',');
+    params.set('airlines', airlineCodes);
+
+    // Show progress, hide results
+    const progressSection = document.getElementById('progress-section');
+    const progressLog = document.getElementById('progress-log');
+    const resultsSection = document.getElementById('results-section');
+    progressSection.style.display = 'block';
+    resultsSection.style.display = 'none';
+    progressLog.innerHTML = '';
+
+    const searchBtn = document.getElementById('search-btn');
+    searchBtn.disabled = true;
+    searchBtn.textContent = 'Searching...';
+
+    let currentStageEl = null;
+    let stageStart = null;
+    let timerInterval = null;
+
+    function fmtElapsed(ms) {
+        const s = (ms / 1000).toFixed(1);
+        return s < 60 ? `${s}s` : `${Math.floor(s/60)}m ${(s%60).toFixed(1)}s`;
+    }
+
+    function startTimer() {
+        if (timerInterval) clearInterval(timerInterval);
+        stageStart = Date.now();
+        timerInterval = setInterval(() => {
+            if (currentStageEl && stageStart) {
+                const elapsed = Date.now() - stageStart;
+                currentStageEl.querySelector('.elapsed').textContent = fmtElapsed(elapsed);
+            }
+        }, 100);
+    }
+
+    function addStage(msg) {
+        // Finalize previous stage timer
+        if (currentStageEl && stageStart) {
+            const elapsed = Date.now() - stageStart;
+            currentStageEl.querySelector('.elapsed').textContent = fmtElapsed(elapsed);
+        }
+        const div = document.createElement('div');
+        div.className = 'log-entry log-stage';
+        div.innerHTML = `${msg} <span class="elapsed" style="opacity:0.6;font-weight:400;"></span>`;
+        progressLog.appendChild(div);
+        progressLog.scrollTop = progressLog.scrollHeight;
+        currentStageEl = div;
+        startTimer();
+    }
+
+    const source = new EventSource(`/search/stream?${params}`);
+
+    source.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'stage') {
+            addStage(data.message);
+        } else if (data.type === 'log') {
+            const div = document.createElement('div');
+            div.className = 'log-entry log-tool';
+            div.textContent = data.message;
+            progressLog.appendChild(div);
+            progressLog.scrollTop = progressLog.scrollHeight;
+        } else if (data.type === 'progress') {
+            if (currentStageEl) {
+                const elapsed = currentStageEl.querySelector('.elapsed');
+                const elapsedText = elapsed ? elapsed.outerHTML : '';
+                const base = currentStageEl.textContent.replace(/\s*\(\d+\s*of\s*\d+\).*/, '').replace(/\s*[\d.]+s$/, '').trim();
+                currentStageEl.innerHTML = `${base} (${data.completed} of ${data.total}) ${elapsedText}`;
+            }
+        } else if (data.type === 'error') {
+            if (timerInterval) clearInterval(timerInterval);
+            addStage(`Error: ${data.message}`);
+            source.close();
+            searchBtn.disabled = false;
+            searchBtn.textContent = 'Search Flights';
+        } else if (data.type === 'done') {
+            if (timerInterval) clearInterval(timerInterval);
+            // Finalize last stage
+            if (currentStageEl && stageStart) {
+                currentStageEl.querySelector('.elapsed').textContent = fmtElapsed(Date.now() - stageStart);
+            }
+            source.close();
+            searchBtn.disabled = false;
+            searchBtn.textContent = 'Search Flights';
+            showResults(data.trips);
+        }
+    };
+
+    source.onerror = () => {
+        if (timerInterval) clearInterval(timerInterval);
+        source.close();
+        searchBtn.disabled = false;
+        searchBtn.textContent = 'Search Flights';
+        addStage('Connection lost.');
+    };
+});
+
+const PAGE_SIZE = 10;
+let rawTrips = [];
+let allTrips = [];
+let currentPage = 1;
+
+function parseTime(t) {
+    if (!t) return null;
+    t = t.trim().toUpperCase();
+    const parts = t.split(' ');
+    if (parts.length > 2) t = parts.slice(-2).join(' ');
+    const isPM = t.includes('PM');
+    const isAM = t.includes('AM');
+    t = t.replace(/AM|PM/g, '').trim();
+    const [h, m] = t.split(':').map(Number);
+    let hour = h;
+    if (isPM && hour !== 12) hour += 12;
+    if (isAM && hour === 12) hour = 0;
+    return hour * 60 + (m || 0);
+}
+
+function isOvernight(trip) {
+    for (const leg of [trip.outbound, trip.return]) {
+        const dep = parseTime(leg.departure_time);
+        if (dep !== null && dep >= 21 * 60) return true;
+        const arr = parseTime(leg.arrival_time);
+        if (arr !== null && arr < 6 * 60) return true;
+    }
+    return false;
+}
+
+function applyFilters() {
+    allTrips = [...rawTrips];
+    if (document.getElementById('nonstop_only').checked) {
+        allTrips = allTrips.filter(t => t.outbound.stop_category === 'nonstop' && t.return.stop_category === 'nonstop');
+    }
+    if (document.getElementById('no_overnight').checked) {
+        allTrips = allTrips.filter(t => !isOvernight(t));
+    }
+    const countEl = document.getElementById('results-count');
+    const noResults = document.getElementById('no-results');
+    if (allTrips.length === 0) {
+        document.getElementById('results-cards').innerHTML = '';
+        document.getElementById('pagination').innerHTML = '';
+        noResults.style.display = 'block';
+        countEl.textContent = '';
+    } else {
+        noResults.style.display = 'none';
+        countEl.textContent = `(${allTrips.length} results)`;
+        renderPage(1);
+    }
+}
+
+document.getElementById('no_overnight').addEventListener('change', applyFilters);
+document.getElementById('nonstop_only').addEventListener('change', applyFilters);
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.appendChild(document.createTextNode(s));
+    return d.innerHTML;
+}
+
+function fmtTime(t) {
+    if (!t) return '—';
+    const m = t.match(/\d{4}-\d{2}-\d{2}\s+(.*)/);
+    return esc(m ? m[1] : t);
+}
+
+function stopsLabel(cat) {
+    return esc(cat === 'nonstop' ? 'Nonstop' : cat);
+}
+
+const airlineCodeMap = {
+    'delta': 'DL', 'united': 'UA', 'american': 'AA',
+    'southwest': 'WN', 'jetblue': 'B6', 'alaska': 'AS',
+    'spirit': 'NK', 'frontier': 'F9', 'hawaiian': 'HA',
+    'sun country': 'SY', 'allegiant': 'G4',
+};
+
+function airlineLogo(name) {
+    if (!name) return '';
+    const safe = esc(name);
+    const lower = name.toLowerCase();
+    const code = airlineCodeMap[lower] || airlineCodeMap[lower.split(' ')[0]] || name.substring(0, 2).toUpperCase();
+    const img = document.createElement('img');
+    img.src = `https://www.gstatic.com/flights/airline_logos/70px/${encodeURIComponent(code)}.png`;
+    img.alt = name;
+    img.title = name;
+    img.className = 'airline-logo';
+    img.onerror = function() { this.replaceWith(document.createTextNode(name)); };
+    const wrap = document.createElement('span');
+    wrap.appendChild(img);
+    return wrap.innerHTML;
+}
+
+function airlineLogos(airlines) {
+    if (!airlines || airlines.length === 0) return '—';
+    return airlines.map(a => airlineLogo(a)).join(' ');
+}
+
+function renderPage(page) {
+    currentPage = page;
+    const container = document.getElementById('results-cards');
+    container.innerHTML = '';
+
+    const start = (page - 1) * PAGE_SIZE;
+    const pageTrips = allTrips.slice(start, start + PAGE_SIZE);
+
+    pageTrips.forEach(t => {
+        const gfUrl = t.google_flights_url || '#';
+        const card = document.createElement('div');
+        card.className = 'flight-card';
+        card.innerHTML = `
+            <div class="card-body">
+                <div class="card-legs">
+                    <div class="leg">
+                        <div class="leg-label">${esc(t.outbound_date)} ${esc(t.outbound_weekday)}</div>
+                        <div class="leg-row">
+                            <div class="leg-meta">
+                                <span class="airline">${airlineLogos(t.outbound.airlines)}</span>
+                                <span class="flight-num">${esc(t.outbound.flight_numbers.join(', '))}</span>
+                            </div>
+                            <div class="leg-time">
+                                <span class="time">${fmtTime(t.outbound.departure_time)}</span>
+                                <span class="airport">${esc(t.origin)}</span>
+                            </div>
+                            <div class="leg-line">
+                                <div class="line-track">
+                                    <span class="dot"></span>
+                                    <span class="track"></span>
+                                    <span class="dot"></span>
+                                </div>
+                                <div class="stops-label">${stopsLabel(t.outbound.stop_category)}${t.outbound.duration ? ' &middot; ' + esc(t.outbound.duration) : ''}</div>
+                            </div>
+                            <div class="leg-time">
+                                <span class="time">${fmtTime(t.outbound.arrival_time)}</span>
+                                <span class="airport">${esc(t.destination)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="leg">
+                        <div class="leg-label">${esc(t.return_date)} ${esc(t.return_weekday)}</div>
+                        <div class="leg-row">
+                            <div class="leg-meta">
+                                <span class="airline">${airlineLogos(t.return.airlines)}</span>
+                                <span class="flight-num">${esc(t.return.flight_numbers.join(', '))}</span>
+                            </div>
+                            <div class="leg-time">
+                                <span class="time">${fmtTime(t.return.departure_time)}</span>
+                                <span class="airport">${esc(t.destination)}</span>
+                            </div>
+                            <div class="leg-line">
+                                <div class="line-track">
+                                    <span class="dot"></span>
+                                    <span class="track"></span>
+                                    <span class="dot"></span>
+                                </div>
+                                <div class="stops-label">${stopsLabel(t.return.stop_category)}${t.return.duration ? ' &middot; ' + esc(t.return.duration) : ''}</div>
+                            </div>
+                            <div class="leg-time">
+                                <span class="time">${fmtTime(t.return.arrival_time)}</span>
+                                <span class="airport">${esc(t.origin)}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-right">
+                    <div class="card-price">$${esc(String(t.price))}</div>
+                    <div class="card-days">${esc(String(t.trip_days))} day${t.trip_days > 1 ? 's' : ''}</div>
+                    <a class="card-link" href="${esc(gfUrl)}" target="_blank" rel="noopener">Google Flights</a>
+                </div>
+            </div>
+        `;
+        container.appendChild(card);
+    });
+
+    renderPagination();
+    // Scroll to results, not to top
+    document.getElementById('results-section').scrollIntoView({behavior: 'smooth'});
+}
+
+function renderPagination() {
+    const pagination = document.getElementById('pagination');
+    const totalPages = Math.ceil(allTrips.length / PAGE_SIZE);
+    if (totalPages <= 1) { pagination.innerHTML = ''; return; }
+
+    let html = '';
+    if (currentPage > 1) {
+        html += `<button class="page-btn" onclick="renderPage(${currentPage - 1})">&laquo; Prev</button>`;
+    }
+    for (let i = 1; i <= totalPages; i++) {
+        html += `<button class="page-btn${i === currentPage ? ' active' : ''}" onclick="renderPage(${i})">${i}</button>`;
+    }
+    if (currentPage < totalPages) {
+        html += `<button class="page-btn" onclick="renderPage(${currentPage + 1})">Next &raquo;</button>`;
+    }
+    pagination.innerHTML = html;
+}
+
+function showResults(trips) {
+    const section = document.getElementById('results-section');
+    section.style.display = 'block';
+
+    if (!trips || trips.length === 0) {
+        rawTrips = [];
+        allTrips = [];
+        document.getElementById('results-cards').innerHTML = '';
+        document.getElementById('pagination').innerHTML = '';
+        document.getElementById('no-results').style.display = 'block';
+        document.getElementById('results-count').textContent = '';
+        return;
+    }
+    rawTrips = trips;
+    applyFilters();
+}
+</script>
+{% endblock %}
