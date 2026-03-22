@@ -1,3 +1,12 @@
+---
+title: FlightClaw
+emoji: ✈️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # FlightClaw
 
 A lightweight flight search tool that finds *cheap round-trip flights across flexible date ranges*. FlightClaw runs a headless Chromium browser (via Playwright) to search Google Flights across date combinations, sampling top outbound and return options to surface competitively priced round trips. Filter by airlines, stops, and overnight flights. Results link directly to Google Flights for booking. Currently only supports US domestic flights (prices in USD). No API keys, no accounts, no cost. All processing runs locally.
