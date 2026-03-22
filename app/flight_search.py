@@ -1,7 +1,5 @@
 """Google Flights URL builder using protobuf wire-format encoding."""
 
-from __future__ import annotations
-
 from base64 import urlsafe_b64encode
 from urllib.parse import urlencode
 from typing import Optional

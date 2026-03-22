@@ -1,7 +1,5 @@
 """Google Flights scraper using Playwright."""
 
-from __future__ import annotations
-
 import asyncio
 from datetime import date as date_type
 from typing import Optional
@@ -93,6 +91,7 @@ async def scrape_roundtrip(
                 "() => document.body.innerText.toLowerCase().includes('returning')",
                 timeout=15000,
             )
+            await asyncio.sleep(0.5)
 
             return_flights = await _extract_flight_list(page)
             if return_flights:
