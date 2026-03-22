@@ -15,7 +15,7 @@ A lightweight flight search tool that finds *cheap round-trip flights across fle
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.9+
 
 ## Installation
 

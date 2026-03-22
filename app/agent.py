@@ -1,5 +1,7 @@
 """Flight search orchestrator — generates date pairs and runs parallel scrapes."""
 
+from __future__ import annotations
+
 import asyncio
 from datetime import date, timedelta
 from collections.abc import AsyncGenerator

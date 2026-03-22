@@ -1,5 +1,7 @@
 """Google Flights scraper using Playwright."""
 
+from __future__ import annotations
+
 import asyncio
 from datetime import date as date_type
 
